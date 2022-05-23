@@ -20,7 +20,7 @@ import (
 type accessTokenResponse struct {
 	AccessToken  string `json:"access_token"`
 	TokenType    string `json:"token_type"`
-	ExpireLength int    `json:"expires_in"`
+	ExpireLength int64    `json:"expires_in"`
 	Scope        string `json:"scope"`
 
 	//when the access token was recieved from reddit.com. Formatted as unix time (time.Now().Unix()).
@@ -113,8 +113,15 @@ func NewApi() RedditApiHandler {
 
 			lookupAccessTokenCache = false //if we couldn't find the access token, must query api for it
 		} else {
-			fmt.Print("found access token in cache\n")
-			client.accessToken = *token
+
+			//make sure token isn't expired
+			if time.Now().Unix() - token.InitializationTime > token.ExpireLength {
+				fmt.Println("access token from cache is expired")
+				lookupAccessTokenCache = false
+			} else {
+				fmt.Println("found access token in cache")
+				client.accessToken = *token
+			}
 		}
 	}
 	if !lookupAccessTokenCache { //query reddit api
