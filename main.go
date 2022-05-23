@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"log"
+	"time"
 
 	"github.com/joho/godotenv"
 	"github.com/jtyrmn/reddit-votewatch/reddit"
@@ -16,4 +17,6 @@ func main() {
 	}
 	client := reddit.NewApi()
 	fmt.Println(client)
+
+	time.Sleep(time.Second * 10)
 }

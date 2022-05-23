@@ -10,8 +10,10 @@ import (
 	"fmt"
 	"io/ioutil"
 	"log"
+	"math"
 	"net/http"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -20,7 +22,7 @@ import (
 type accessTokenResponse struct {
 	AccessToken  string `json:"access_token"`
 	TokenType    string `json:"token_type"`
-	ExpireLength int64    `json:"expires_in"`
+	ExpireLength int64  `json:"expires_in"`
 	Scope        string `json:"scope"`
 
 	//when the access token was recieved from reddit.com. Formatted as unix time (time.Now().Unix()).
@@ -28,7 +30,7 @@ type accessTokenResponse struct {
 	InitializationTime int64 `json:"initialization_time"`
 }
 
-//**** IMPORTANT: never call cache() or pullFromCache() below if env var CACHE_ACCESS_TOKEN is not true, because ACCESS_TOKEN_PATH will probably not be set and the program will crash
+//**** IMPORTANT: never call cache() or pullFromCache() below if env var CACHE_ACCESS_TOKEN is not true, because ACCESS_TOKEN_PATH will probably not be set and the program will halt
 
 //save the access token and its metadata to filesystem. Returns nil if successful
 func (a *accessTokenResponse) cache() error {
@@ -69,7 +71,7 @@ func (a accessTokenResponse) String() string {
 
 //the api handler object
 //should be created using NewApi()
-type RedditApiHandler struct {
+type redditApiHandler struct {
 	accessToken      accessTokenResponse
 	cacheAccessToken bool //whether or not the access token should be cached/decached
 
@@ -83,7 +85,7 @@ type RedditApiHandler struct {
 }
 
 //dont want to print out private secrets + passwords while debugging
-func (r RedditApiHandler) String() string {
+func (r redditApiHandler) String() string {
 	return fmt.Sprintf("{%s %v %s <REDACTED> %s <REDACTED>}", r.accessToken, r.cacheAccessToken, r.clientId, r.redditUsername)
 }
 
@@ -91,13 +93,13 @@ func (r RedditApiHandler) String() string {
 //OAuth2 authentication. Unless data is pulled from cache, this function will call the reddit api
 
 //make sure you have all the env variables assigned before calling this
-func NewApi() RedditApiHandler {
-	client := RedditApiHandler{
+func NewApi() redditApiHandler {
+	client := redditApiHandler{
 		clientId:         getEnv("REDDIT_CLIENT_ID"),
 		clientSecret:     getEnv("REDDIT_CLIENT_SECRET"),
 		redditUsername:   getEnv("REDDIT_USERNAME"),
 		redditPassword:   getEnv("REDDIT_PASSWORD"),
-		cacheAccessToken: strings.ToLower(GetEnvDefault("CACHE_ACCESS_TOKEN", "true")) == "true", /*theres probably a better way to do this*/
+		cacheAccessToken: strings.ToLower(getEnvDefault("CACHE_ACCESS_TOKEN", "true")) == "true", /*theres probably a better way to do this*/
 	}
 
 	//recieve access token, either by cache or request to api
@@ -108,14 +110,14 @@ func NewApi() RedditApiHandler {
 			if err != nil { //if there was error
 				fmt.Printf("error pulling access token from cache:\n%s\n", err.Error())
 			} else { //pullFromCache() returning (nil, nil) means the cache doesn't exist/isn't created yet
-				fmt.Printf("cache not found at %s\n", GetEnvDefault("ACCESS_TOKEN_PATH", "<ACCESS_TOKEN_PATH>"))
+				fmt.Printf("cache not found at %s\n", getEnvDefault("ACCESS_TOKEN_PATH", "<ACCESS_TOKEN_PATH>"))
 			}
 
 			lookupAccessTokenCache = false //if we couldn't find the access token, must query api for it
 		} else {
 
 			//make sure token isn't expired
-			if time.Now().Unix() - token.InitializationTime > token.ExpireLength {
+			if time.Now().Unix()-token.InitializationTime > token.ExpireLength {
 				fmt.Println("access token from cache is expired")
 				lookupAccessTokenCache = false
 			} else {
@@ -147,12 +149,14 @@ func NewApi() RedditApiHandler {
 		}
 	}
 
+	//start the access token refresh scheduler
+	go client.startTokenRefreshCycle()
 
 	return client
 }
 
 //call reddit and request an access token
-func fetchAccessToken(client RedditApiHandler) (*accessTokenResponse, error) {
+func fetchAccessToken(client redditApiHandler) (*accessTokenResponse, error) {
 	requestBody := fmt.Sprintf("grant_type=password&username=%s&password=%s", client.redditUsername, client.redditPassword)
 	request, err := http.NewRequest("POST", "https://www.reddit.com/api/v1/access_token", bytes.NewBuffer([]byte(requestBody)))
 	if err != nil {
@@ -208,7 +212,7 @@ func getEnv(str string) string {
 }
 
 //equivelant to getEnv except doesn't cause an error and substitutes a default value (def)
-func GetEnvDefault(str string, def string) string {
+func getEnvDefault(str string, def string) string {
 	var v string
 	v, exists := os.LookupEnv(str)
 	if !exists {
@@ -217,4 +221,65 @@ func GetEnvDefault(str string, def string) string {
 	}
 
 	return v
+}
+
+//once this function is called, it will repeatedly schedule times at which it will refresh the access token
+//should be called as a go routine
+func (r *redditApiHandler) startTokenRefreshCycle() {
+	//calculate the interval amount in seconds
+	//more info on TOKEN_REFRESH_LENIENCY in .env.template
+	leniency, err := strconv.ParseFloat(getEnvDefault("TOKEN_REFRESH_LENIENCY", "0.99"), 32)
+	if err != nil {
+		fmt.Println("warning: env variable TOKEN_REFRESH_LENIENCY unreadable. Defaulting to 0.99...")
+		leniency = 0.99
+	}
+
+	//dont accidently ddos reddit
+	if leniency < 0.0001 {
+		fmt.Println("warning: leniency is dangerously low. Increasing to 0.0001")
+		leniency = 0.0001
+	}
+
+	//leniency is big; token will expire before it refreshes
+	if leniency >= 1.00 {
+		fmt.Printf("warning: leniency %f is very high. This will likely result in errors later\n", leniency)
+	}
+
+	//how long before the expiration date until it's time to refresh
+	delay_sub := float64(r.accessToken.ExpireLength) * (1.0 - leniency)
+
+	regular_delay := float64(r.accessToken.ExpireLength) - delay_sub
+	fmt.Println(regular_delay, delay_sub)
+
+	for {
+		tokenRefreshCycleIteration(r, regular_delay)
+	}
+}
+
+func tokenRefreshCycleIteration(r *redditApiHandler, regular_delay float64) {
+	defer func() {
+		if r := recover(); r != nil {
+			fmt.Printf("error during token refresh cycle:\n%s\n", r)
+		}
+	}()
+
+	//wait until token is about to expire
+	//either the regular delay of every loop or incase the token was taken from a cache and is older than expected. Whatever is smaller
+	delay := math.Min(regular_delay, float64(r.accessToken.InitializationTime+r.accessToken.ExpireLength-time.Now().Unix()))
+	time.Sleep(time.Second * time.Duration(delay))
+
+	//refresh token
+	fmt.Println("refreshing token...")
+	token, err := fetchAccessToken(*r)
+	if err != nil {
+		panic(err)
+	}
+
+	r.accessToken = *token
+	if r.cacheAccessToken {
+		err = r.accessToken.cache()
+		if err != nil {
+			panic(err)
+		}
+	}
 }
