@@ -3,7 +3,6 @@ package main
 import (
 	"fmt"
 	"log"
-	"time"
 
 	"github.com/joho/godotenv"
 	"github.com/jtyrmn/reddit-votewatch/reddit"
@@ -18,5 +17,13 @@ func main() {
 	client := reddit.NewApi()
 	fmt.Println(client)
 
-	time.Sleep(time.Second * 10)
+	fmt.Println("getting data...")
+	data, err := client.GetNewestPosts("dwarffortress", 10)
+	if err != nil {
+		panic(err)
+	}
+	for _, p := range data {
+		fmt.Println(p)
+	}
+	fmt.Println(len(data), "posts listed")
 }

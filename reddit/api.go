@@ -16,6 +16,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/jtyrmn/reddit-votewatch/util"
 )
 
 //container to hold a standard access token recieved from https://www.reddit.com/api/v1/access_token
@@ -35,7 +37,7 @@ type accessTokenResponse struct {
 //save the access token and its metadata to filesystem. Returns nil if successful
 func (a *accessTokenResponse) cache() error {
 	json, _ := json.Marshal(a) //encoding a static struct should never return an error I assume
-	err := os.WriteFile(getEnv("ACCESS_TOKEN_PATH"), json, 0666)
+	err := os.WriteFile(util.GetEnv("ACCESS_TOKEN_PATH"), json, 0666)
 	if err != nil {
 		return errors.New("error caching access token: " + err.Error())
 	}
@@ -44,7 +46,7 @@ func (a *accessTokenResponse) cache() error {
 
 //attempt to recieve access token from cache. if cache wasn't found and there wasn't any other error, this function will return (nil, nil)
 func (a accessTokenResponse) pullFromCache() (*accessTokenResponse, error) {
-	path := getEnv("ACCESS_TOKEN_PATH")
+	path := util.GetEnv("ACCESS_TOKEN_PATH")
 
 	if _, err := os.Stat(path); errors.Is(err, os.ErrNotExist) {
 		//cache file does not exist
@@ -95,11 +97,11 @@ func (r redditApiHandler) String() string {
 //make sure you have all the env variables assigned before calling this
 func NewApi() redditApiHandler {
 	client := redditApiHandler{
-		clientId:         getEnv("REDDIT_CLIENT_ID"),
-		clientSecret:     getEnv("REDDIT_CLIENT_SECRET"),
-		redditUsername:   getEnv("REDDIT_USERNAME"),
-		redditPassword:   getEnv("REDDIT_PASSWORD"),
-		cacheAccessToken: strings.ToLower(getEnvDefault("CACHE_ACCESS_TOKEN", "true")) == "true", /*theres probably a better way to do this*/
+		clientId:         util.GetEnv("REDDIT_CLIENT_ID"),
+		clientSecret:     util.GetEnv("REDDIT_CLIENT_SECRET"),
+		redditUsername:   util.GetEnv("REDDIT_USERNAME"),
+		redditPassword:   util.GetEnv("REDDIT_PASSWORD"),
+		cacheAccessToken: strings.ToLower(util.GetEnvDefault("CACHE_ACCESS_TOKEN", "true")) == "true", /*theres probably a better way to do this*/
 	}
 
 	//recieve access token, either by cache or request to api
@@ -110,7 +112,7 @@ func NewApi() redditApiHandler {
 			if err != nil { //if there was error
 				fmt.Printf("error pulling access token from cache:\n%s\n", err.Error())
 			} else { //pullFromCache() returning (nil, nil) means the cache doesn't exist/isn't created yet
-				fmt.Printf("cache not found at %s\n", getEnvDefault("ACCESS_TOKEN_PATH", "<ACCESS_TOKEN_PATH>"))
+				fmt.Printf("cache not found at %s\n", util.GetEnvDefault("ACCESS_TOKEN_PATH", "<ACCESS_TOKEN_PATH>"))
 			}
 
 			lookupAccessTokenCache = false //if we couldn't find the access token, must query api for it
@@ -163,9 +165,11 @@ func fetchAccessToken(client redditApiHandler) (*accessTokenResponse, error) {
 		return nil, errors.New("should this error ever occur? " + err.Error())
 	}
 
+	//headers
+	authorization := "basic " + base64.StdEncoding.EncodeToString([]byte(client.clientId + ":" + client.clientSecret))
 	request.Header = http.Header{
-		"user-agent":    []string{getEnv("REDDIT_USERAGENT_STRING")},
-		"authorization": []string{"basic " + base64.StdEncoding.EncodeToString([]byte(client.clientId+":"+client.clientSecret))},
+		"user-agent":    []string{util.GetEnv("REDDIT_USERAGENT_STRING")},
+		"authorization": []string{authorization},
 	}
 
 	response, err := http.DefaultClient.Do(request)
@@ -202,33 +206,12 @@ func fetchAccessToken(client redditApiHandler) (*accessTokenResponse, error) {
 	return &responseJSON, nil
 }
 
-func getEnv(str string) string {
-	v, exists := os.LookupEnv(str)
-	if !exists {
-		log.Fatalf("cannot find environment variable \"%s\": halting execution...\n", str)
-	}
-
-	return v
-}
-
-//equivelant to getEnv except doesn't cause an error and substitutes a default value (def)
-func getEnvDefault(str string, def string) string {
-	var v string
-	v, exists := os.LookupEnv(str)
-	if !exists {
-		fmt.Printf("warning: env variable %s not found, defaulting to \"%s\"...\n", str, def)
-		return def
-	}
-
-	return v
-}
-
 //once this function is called, it will repeatedly schedule times at which it will refresh the access token
 //should be called as a go routine
 func (r *redditApiHandler) startTokenRefreshCycle() {
 	//calculate the interval amount in seconds
 	//more info on TOKEN_REFRESH_LENIENCY in .env.template
-	leniency, err := strconv.ParseFloat(getEnvDefault("TOKEN_REFRESH_LENIENCY", "0.99"), 32)
+	leniency, err := strconv.ParseFloat(util.GetEnvDefault("TOKEN_REFRESH_LENIENCY", "0.99"), 32)
 	if err != nil {
 		fmt.Println("warning: env variable TOKEN_REFRESH_LENIENCY unreadable. Defaulting to 0.99...")
 		leniency = 0.99
@@ -249,7 +232,6 @@ func (r *redditApiHandler) startTokenRefreshCycle() {
 	delay_sub := float64(r.accessToken.ExpireLength) * (1.0 - leniency)
 
 	regular_delay := float64(r.accessToken.ExpireLength) - delay_sub
-	fmt.Println(regular_delay, delay_sub)
 
 	for {
 		tokenRefreshCycleIteration(r, regular_delay)
