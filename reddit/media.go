@@ -1,6 +1,7 @@
 package reddit
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -48,9 +49,16 @@ func (r redditApiHandler) GetNewestPosts(subreddit string, num int) ([]redditCon
 	}
 
 	populateStandardHeaders(&request.Header, r.accessToken)
+
+	//r.rateLimiter.Wait(context.Background())
 	response, err := http.DefaultClient.Do(request)
 	if err != nil {
 		return nil, err
+	}
+
+	//unauthorized
+	if response.StatusCode != 200 {
+		return nil, errors.New(response.Status + " recieved querying reddit")
 	}
 
 	responseBody, _ := ioutil.ReadAll(response.Body)
@@ -92,9 +100,16 @@ func (r redditApiHandler) FetchPosts(IDs []string) ([]redditContent, error) {
 	}
 
 	populateStandardHeaders(&request.Header, r.accessToken)
+
+	r.rateLimiter.Wait(context.Background())
 	response, err := http.DefaultClient.Do(request)
 	if err != nil {
 		return nil, err
+	}
+
+	//unauthorized
+	if response.StatusCode != 200 {
+		return nil, errors.New(response.Status + " recieved querying reddit")
 	}
 
 	responseBody, _ := ioutil.ReadAll(response.Body)

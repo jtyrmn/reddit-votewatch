@@ -18,6 +18,8 @@ import (
 	"time"
 
 	"github.com/jtyrmn/reddit-votewatch/util"
+
+	"golang.org/x/time/rate"
 )
 
 //container to hold a standard access token recieved from https://www.reddit.com/api/v1/access_token
@@ -84,6 +86,9 @@ type redditApiHandler struct {
 	//reddit account of your bot
 	redditUsername string
 	redditPassword string
+
+	//rate limiting
+	rateLimiter rate.Limiter
 }
 
 //dont want to print out private secrets + passwords while debugging
@@ -101,7 +106,14 @@ func NewApi() redditApiHandler {
 		clientSecret:     util.GetEnv("REDDIT_CLIENT_SECRET"),
 		redditUsername:   util.GetEnv("REDDIT_USERNAME"),
 		redditPassword:   util.GetEnv("REDDIT_PASSWORD"),
-		cacheAccessToken: strings.ToLower(util.GetEnvDefault("CACHE_ACCESS_TOKEN", "true")) == "true", /*theres probably a better way to do this*/
+		cacheAccessToken: strings.ToLower(util.GetEnvDefault("CACHE_ACCESS_TOKEN", "true")) == "true", //theres probably a better way to do this
+
+		/*
+			The reddit API limits oauth2 clients to 60 requests per minute https://github.com/reddit-archive/reddit/wiki/API#rules
+			Observing the x-limit-remaining, x-limit-reset headers from oauth.reddit.com responses makes me thing the rate limit is actually around 600 requests per 10 minutes
+			which is the same frequecy but allows for greater bursts. I assume the 60 requests per minute means they don't want to deal with 600-request bursts
+		*/
+		rateLimiter: *rate.NewLimiter(rate.Every(time.Minute), 60),
 	}
 
 	//recieve access token, either by cache or request to api
@@ -166,7 +178,7 @@ func fetchAccessToken(client redditApiHandler) (*accessTokenResponse, error) {
 	}
 
 	//headers
-	authorization := "basic " + base64.StdEncoding.EncodeToString([]byte(client.clientId + ":" + client.clientSecret))
+	authorization := "basic " + base64.StdEncoding.EncodeToString([]byte(client.clientId+":"+client.clientSecret))
 	request.Header = http.Header{
 		"user-agent":    []string{util.GetEnv("REDDIT_USERAGENT_STRING")},
 		"authorization": []string{authorization},
@@ -218,9 +230,10 @@ func (r *redditApiHandler) startTokenRefreshCycle() {
 	}
 
 	//dont accidently ddos reddit
-	if leniency < 0.0001 {
-		fmt.Println("warning: leniency is dangerously low. Increasing to 0.0001")
-		leniency = 0.0001
+	minimumLeniency := 0.0001
+	if leniency < minimumLeniency {
+		fmt.Printf("warning: leniency is dangerously low. Increasing to %f\n", minimumLeniency)
+		leniency = minimumLeniency
 	}
 
 	//leniency is big; token will expire before it refreshes
