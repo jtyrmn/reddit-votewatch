@@ -96,11 +96,11 @@ func (r redditApiHandler) String() string {
 	return fmt.Sprintf("{%s %v %s <REDACTED> %s <REDACTED>}", r.accessToken, r.cacheAccessToken, r.clientId, r.redditUsername)
 }
 
-//NewApi() creates a reddit api client and also initializes
+//Connect() creates a reddit api client and also initializes
 //OAuth2 authentication. Unless data is pulled from cache, this function will call the reddit api
 
 //make sure you have all the env variables assigned before calling this
-func NewApi() redditApiHandler {
+func Connect() redditApiHandler {
 	client := redditApiHandler{
 		clientId:         util.GetEnv("REDDIT_CLIENT_ID"),
 		clientSecret:     util.GetEnv("REDDIT_CLIENT_SECRET"),
