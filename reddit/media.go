@@ -22,9 +22,13 @@ type redditContent struct {
 	Upvotes     int    `json:"ups"`
 }
 
+//fullname of a reddit listing. Calculated using FullId()
+//probably shouldn't be exported. It only is for debugging reasons
+type Fullname string
+
 //the API requires you identify content via their "fullnames", which is the content type + id. For example: t3_62sjuh
-func (r redditContent) FullId() string {
-	return r.ContentType + "_" + r.Id
+func (r redditContent) FullId() Fullname {
+	return Fullname(r.ContentType + "_" + r.Id)
 }
 
 //use this struct whenever you need to parse a standard GET response from oauth.reddit.com and get the reddit media
@@ -41,12 +45,11 @@ type responseParserStruct struct {
 
 //get the <num> latest posts at a specific subreddit
 //it's important to note that exactly <num> posts being returned is not garanteed. Their might be 100 <num> posts on the subreddit, and other cases
-//note: (non-concurrent) api calls are done in groups of 100 listings. So 101 requests will block for twice as long as 100 requests 
+//note: (non-concurrent) api calls are done in groups of 100 listings. So 101 requests will block for twice as long as 100 requests
 func (r redditApiHandler) GetNewestPosts(subreddit string, num int) ([]redditContent, error) {
 	if num <= 0 {
 		return nil, fmt.Errorf("num %d must be positive", num)
 	}
-
 
 	//our nested function to call api. Used in loop below
 	callApi := func(url string) (*responseParserStruct, error) {
@@ -138,47 +141,111 @@ func (r redditApiHandler) GetNewestPosts(subreddit string, num int) ([]redditCon
 }
 
 //given a list of fullname IDs (justFullID()), queries reddit for the posts corresponding to those IDS
-func (r redditApiHandler) FetchPosts(IDs []string) ([]redditContent, error) {
-	//construct the url
-	//see reddit api documentation on /api/info
-	var url_builder strings.Builder
+//returns a mapping of listings, indexed by their own fullname IDs
+func (r redditApiHandler) FetchPosts(IDs []Fullname) (*map[Fullname]redditContent, error) {
+	const limit = 100
+	/*
+		the /api/info endpoint allows at most 100 listings to be fetched in a single call, or behaviour will be undefined
+		therefore I will make multiple api calls of 100 (or less) listings each.
+	*/
+
+	numListings := len(IDs)
+	totalCalls := int(math.Ceil(float64(numListings) / limit))
+
+	//the concurrent function to request a batch of IDs
+	//given a set of IDs, request their corresponding content from reddit and pipe them into out channel
+	fetchBatch := func(in []Fullname, out chan<- []redditContent, errChan chan<- error) {
+		//construct the url
+		//see reddit api documentation on /api/info
+		var url_builder strings.Builder
+		for _, ID := range in {
+			url_builder.WriteString(string(ID) + ",")
+		}
+		url := "https://oauth.reddit.com/api/info/?id=" + url_builder.String()
+		//fmt.Println(url)
+
+		request, err := http.NewRequest("GET", url, nil)
+		if err != nil {
+			errChan <- err
+			return
+		}
+
+		populateStandardHeaders(&request.Header, r.accessToken)
+
+		r.rateLimiter.Wait(context.Background())
+		response, err := http.DefaultClient.Do(request)
+		if err != nil {
+			errChan <- err
+			return
+		}
+
+		//unauthorized
+		if response.StatusCode != 200 {
+			errChan <- errors.New(response.Status + " recieved querying reddit")
+			return
+		}
+
+		responseBody, _ := ioutil.ReadAll(response.Body)
+
+		//parsing response
+		var responseBodyJson responseParserStruct
+		json.Unmarshal(responseBody, &responseBodyJson)
+
+		//return all the redditContent in responseBodyJson
+		redditContentArray := make([]redditContent, len(responseBodyJson.Data.Children))
+
+		for i, post := range responseBodyJson.Data.Children {
+			redditContentArray[i] = post.Data
+			redditContentArray[i].ContentType = post.ContentType
+		}
+
+		out <- redditContentArray
+
+	}
+
+	//create range of IDs for each call
+	batchIDs := make([][]Fullname, totalCalls)
+	currentIndex := 0
+	for currentCall := 0; currentCall < totalCalls; currentCall += 1 {
+		//if this is the last batch, the number of remaining IDs is in range (0, 100], not strictly 100
+		if currentIndex+limit >= numListings {
+			batchIDs[currentCall] = IDs[currentIndex:]
+		} else {
+			batchIDs[currentCall] = IDs[currentIndex : currentIndex+limit]
+		}
+		currentIndex += limit
+	}
+
+	//send out the batch requests
+	out := make(chan []redditContent)
+	errChan := make(chan error)
+
+	r.rateLimiter.WaitN(context.Background(), totalCalls)
+	for currentCall := 0; currentCall < totalCalls; currentCall += 1 {
+		go fetchBatch(batchIDs[currentCall], out, errChan)
+	}
+
+	//recieve content from goroutines
+	contentMap := make(map[Fullname]redditContent)
+	for i := 0; i < totalCalls; i += 1 {
+		select {
+		case result := <-out: //a response was successfully recieved and processed
+			for _, content := range result {
+				contentMap[content.FullId()] = content
+			}
+		case err := <-errChan: //not successful
+			//apparently im supposed to use an errgroup instead of an error channel for this? idk 
+			fmt.Printf("error during batch request %d:\n%s\n", i+1, err.Error())
+		}
+		fmt.Printf("batch request %d/%d done\n", i+1, totalCalls)
+	}
+
+	//check over all our IDs to make sure they were inserted
 	for _, ID := range IDs {
-		url_builder.WriteString(ID + ",")
-	}
-	url := "https://oauth.reddit.com/api/info/?id=" + url_builder.String()
-
-	request, err := http.NewRequest("GET", url, nil)
-	if err != nil {
-		panic(err)
+		if _, exists := contentMap[ID]; !exists {
+			fmt.Printf("warning: ID %s returned nothing from reddit\n", ID)
+		}
 	}
 
-	populateStandardHeaders(&request.Header, r.accessToken)
-
-	r.rateLimiter.Wait(context.Background())
-	response, err := http.DefaultClient.Do(request)
-	if err != nil {
-		return nil, err
-	}
-
-	//unauthorized
-	if response.StatusCode != 200 {
-		return nil, errors.New(response.Status + " recieved querying reddit")
-	}
-
-	responseBody, _ := ioutil.ReadAll(response.Body)
-
-	//parsing response
-	var responseBodyJson responseParserStruct
-	json.Unmarshal(responseBody, &responseBodyJson)
-
-	//return all the redditContent in responseBodyJson
-	redditContentArray := make([]redditContent, len(responseBodyJson.Data.Children))
-
-	//maybe I should instead return a map with IDs as keys and redditContents as values? perhaps
-	for i, post := range responseBodyJson.Data.Children {
-		redditContentArray[i] = post.Data
-		redditContentArray[i].ContentType = post.ContentType
-	}
-
-	return redditContentArray, nil
+	return &contentMap, nil
 }
