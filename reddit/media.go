@@ -8,17 +8,18 @@ import (
 	"io/ioutil"
 	"math"
 	"net/http"
+	"regexp"
 	"strings"
 )
 
 //all types of content from reddit (posts, comments, etc) are represented as the same object in the reddit API and thus are all represented as the same in this struct
 //ContentType identifies the type of content. eg: t1_ = comment, t3_ = post, etc. See https://www.reddit.com/dev/api/
 //note that certain fields will be 0-initialized for certain content types. Comments dont't have titles for example.
-type redditContent struct {
+type RedditContent struct {
 	ContentType string `json:"kind"`
 	Id          string
 	Title       string
-	Content     string `json:"selftext"`
+	Content     string `json:"selftext"` //can probably remove this later
 	Upvotes     int    `json:"ups"`
 }
 
@@ -26,8 +27,17 @@ type redditContent struct {
 //probably shouldn't be exported. It only is for debugging reasons
 type Fullname string
 
+//ensure the fullname is of t-_------ form
+func (s Fullname) IsValid() bool {
+	result, _ := regexp.MatchString("^t[1-6]_[a-z0-9]{6}$", string(s))
+	return result
+}
+
+//a common return type/parameter for many functions in this program
+type ContentGroup map[Fullname]RedditContent
+
 //the API requires you identify content via their "fullnames", which is the content type + id. For example: t3_62sjuh
-func (r redditContent) FullId() Fullname {
+func (r RedditContent) FullId() Fullname {
 	return Fullname(r.ContentType + "_" + r.Id)
 }
 
@@ -38,7 +48,7 @@ type responseParserStruct struct {
 
 		Children []struct {
 			ContentType string `json:"kind"`
-			Data        redditContent
+			Data        RedditContent
 		}
 	}
 }
@@ -46,7 +56,7 @@ type responseParserStruct struct {
 //get the <num> latest posts at a specific subreddit
 //it's important to note that exactly <num> posts being returned is not garanteed. Their might be 100 <num> posts on the subreddit, and other cases
 //note: (non-concurrent) api calls are done in groups of 100 listings. So 101 requests will block for twice as long as 100 requests
-func (r redditApiHandler) GetNewestPosts(subreddit string, num int) ([]redditContent, error) {
+func (r redditApiHandler) GetNewestPosts(subreddit string, num int) ([]RedditContent, error) {
 	if num <= 0 {
 		return nil, fmt.Errorf("num %d must be positive", num)
 	}
@@ -92,7 +102,7 @@ func (r redditApiHandler) GetNewestPosts(subreddit string, num int) ([]redditCon
 	const limit = 100
 
 	//note: it's not garanteed for results to be full after this operation. Have to reduce it's size later if that's the case
-	results := make([]redditContent, num)
+	results := make([]RedditContent, num)
 	results_index := 0
 
 	totalCalls := int(math.Ceil(float64(num) / limit)) //how many calls we need to make to get num listings
@@ -142,7 +152,7 @@ func (r redditApiHandler) GetNewestPosts(subreddit string, num int) ([]redditCon
 
 //given a list of fullname IDs (justFullID()), queries reddit for the posts corresponding to those IDS
 //returns a mapping of listings, indexed by their own fullname IDs
-func (r redditApiHandler) FetchPosts(IDs []Fullname) (*map[Fullname]redditContent, error) {
+func (r redditApiHandler) FetchPosts(IDs []Fullname) (*ContentGroup, error) {
 	const limit = 100
 	/*
 		the /api/info endpoint allows at most 100 listings to be fetched in a single call, or behaviour will be undefined
@@ -154,7 +164,7 @@ func (r redditApiHandler) FetchPosts(IDs []Fullname) (*map[Fullname]redditConten
 
 	//the concurrent function to request a batch of IDs
 	//given a set of IDs, request their corresponding content from reddit and pipe them into out channel
-	fetchBatch := func(in []Fullname, out chan<- []redditContent, errChan chan<- error) {
+	fetchBatch := func(in []Fullname, out chan<- []RedditContent, errChan chan<- error) {
 		//construct the url
 		//see reddit api documentation on /api/info
 		var url_builder strings.Builder
@@ -192,7 +202,7 @@ func (r redditApiHandler) FetchPosts(IDs []Fullname) (*map[Fullname]redditConten
 		json.Unmarshal(responseBody, &responseBodyJson)
 
 		//return all the redditContent in responseBodyJson
-		redditContentArray := make([]redditContent, len(responseBodyJson.Data.Children))
+		redditContentArray := make([]RedditContent, len(responseBodyJson.Data.Children))
 
 		for i, post := range responseBodyJson.Data.Children {
 			redditContentArray[i] = post.Data
@@ -217,7 +227,7 @@ func (r redditApiHandler) FetchPosts(IDs []Fullname) (*map[Fullname]redditConten
 	}
 
 	//send out the batch requests
-	out := make(chan []redditContent)
+	out := make(chan []RedditContent)
 	errChan := make(chan error)
 
 	r.rateLimiter.WaitN(context.Background(), totalCalls)
@@ -226,7 +236,7 @@ func (r redditApiHandler) FetchPosts(IDs []Fullname) (*map[Fullname]redditConten
 	}
 
 	//recieve content from goroutines
-	contentMap := make(map[Fullname]redditContent)
+	contentMap := make(ContentGroup)
 	for i := 0; i < totalCalls; i += 1 {
 		select {
 		case result := <-out: //a response was successfully recieved and processed
@@ -234,7 +244,7 @@ func (r redditApiHandler) FetchPosts(IDs []Fullname) (*map[Fullname]redditConten
 				contentMap[content.FullId()] = content
 			}
 		case err := <-errChan: //not successful
-			//apparently im supposed to use an errgroup instead of an error channel for this? idk 
+			//apparently im supposed to use an errgroup instead of an error channel for this? idk
 			fmt.Printf("error during batch request %d:\n%s\n", i+1, err.Error())
 		}
 		fmt.Printf("batch request %d/%d done\n", i+1, totalCalls)

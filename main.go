@@ -5,6 +5,7 @@ import (
 	"log"
 
 	"github.com/joho/godotenv"
+	"github.com/jtyrmn/reddit-votewatch/database"
 	"github.com/jtyrmn/reddit-votewatch/reddit"
 )
 
@@ -19,14 +20,14 @@ func main() {
 	fmt.Println(client)
 
 	fmt.Println("\ngetting data...")
-	data, err := client.GetNewestPosts("dwarffortress", 101)
+	data, err := client.GetNewestPosts("dwarffortress", 10)
 	if err != nil {
 		panic(err)
 	}
 	// for _, p := range data {
 	// 	fmt.Println(p.Title)
 	// }
-	fmt.Println(len(data), "posts listed")
+	fmt.Println(len(data), "posts recieved")
 
 	fmt.Println("\nre-requesting data...")
 	IDs := make([]reddit.Fullname, len(data))
@@ -41,5 +42,22 @@ func main() {
 
 	for ID, post := range *data2 {
 		fmt.Printf("%s: %s\n", ID, post.Title)
+	}
+
+	fmt.Println("connecting to db...")
+	conn, err := database.Connect()
+	if err != nil {
+		panic(err)
+	}
+
+	fmt.Println("sending to db...")
+	conn.SaveListings(*data2)
+
+	fmt.Println("recieving from db...")
+	data3 := make(reddit.ContentGroup)
+	conn.RecieveListings(data3)
+
+	for key, val := range data3 {
+		fmt.Printf("%s: %s\n", key, val.Title)
 	}
 }
