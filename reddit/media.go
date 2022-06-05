@@ -19,8 +19,18 @@ type RedditContent struct {
 	ContentType string `json:"kind"`
 	Id          string
 	Title       string
-	Content     string `json:"selftext"` //can probably remove this later
-	Upvotes     int    `json:"ups"`
+	//Content     string `json:"selftext"` //can probably remove this later
+	Upvotes  int `json:"ups"`
+	Comments int `json:"num_comments"`
+	Date     any `json:"created_utc"` //standard unix time of creation. Why does reddit api return this value as a float? Especially since created_utc is always a whole number? This will just make things confusing later
+}
+
+//fill in important headers of r + refactor some data. *ALWAYS* do this on RedditContents structs that were freshly parsed from JSON
+func (r *RedditContent) FillFields(contentType string) {
+	r.ContentType = contentType
+
+	//convert Date to uint64 as API returns it as a floating point
+	r.Date = uint64(r.Date.(float64))
 }
 
 //fullname of a reddit listing. Calculated using FullId()
@@ -135,8 +145,8 @@ func (r redditApiHandler) GetNewestPosts(subreddit string, num int) ([]RedditCon
 
 		//fill the results array with this iteration's 100 or less listings
 		for _, post := range response.Data.Children {
+			post.Data.FillFields(post.ContentType)
 			results[results_index] = post.Data
-			results[results_index].ContentType = post.ContentType
 			results_index += 1
 		}
 
