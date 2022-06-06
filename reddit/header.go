@@ -1,8 +1,10 @@
 package reddit
 
 import (
+	"errors"
 	"fmt"
 	"net/http"
+	"time"
 
 	"github.com/jtyrmn/reddit-votewatch/util"
 )
@@ -15,4 +17,24 @@ func populateStandardHeaders(header *http.Header, token accessTokenResponse) {
 
 	header.Add("user-agent", userAgent)
 	header.Add("authorization", authorization)
+}
+
+//get the time an http response was sent
+func getTimeOfSending(response *http.Response) (uint64, error) {
+
+	//RFC 7231: time formatting of date headers
+	formatting := "Mon, 02 Jan 2006 15:04:05 GMT"
+
+	header, exists := response.Header["Date"]
+	if !exists {
+		return 0, errors.New("http response lacks Date header") //should never happen
+	}
+
+	date, err := time.Parse(formatting, header[0])
+	if err != nil {
+		return 0, errors.New("error parsing http date header:\n" + err.Error()) //also should never happen
+	}
+
+	return uint64(date.Unix()), nil
+
 }

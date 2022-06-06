@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"time"
 
 	"github.com/jtyrmn/reddit-votewatch/reddit"
 	"github.com/jtyrmn/reddit-votewatch/util"
@@ -96,25 +95,21 @@ func (c connection) RecieveListings(set reddit.ContentGroup) error {
 //Records all the listings in newData as entries in the database under their respective listings
 func (c connection) RecordNewData(newData reddit.ContentGroup) error {
 
-	//it isn't correct to use the time of calling this function. It should use the time of recieving the http response from reddit.
-	//TODO fix this later
-	currentTime := time.Now().Unix()
-	
-	//template for a single entry under a listing 
+	//template for a single entry under a listing
 	type record struct {
-		Upvotes  int    
-		Comments int    
-		Date     uint64 
+		Upvotes  int
+		Comments int
+		Date     uint64
 	}
 
-	//have to construct a bulk write, a unique $push update for every entry listing	
+	//have to construct a bulk write, a unique $push update for every entry listing
 	models := make([]mongo.WriteModel, len(newData))
 	modelsIdx := 0
 	for id, listing := range newData {
 		r := record{
-			Upvotes: listing.Upvotes,
+			Upvotes:  listing.Upvotes,
 			Comments: listing.Comments,
-			Date: uint64(currentTime),
+			Date:     listing.QueryDate,
 		}
 
 		model := mongo.NewUpdateOneModel().SetFilter(bson.D{{"_id", id}}).SetUpdate(bson.D{{"$push", bson.D{{"entries", r}}}})

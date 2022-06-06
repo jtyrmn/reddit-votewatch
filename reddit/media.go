@@ -22,9 +22,10 @@ type RedditContent struct {
 	Id          string
 	Title       string
 	//Content     string `json:"selftext"` //can probably remove this later
-	Upvotes  int    `json:"ups" mapstructure:"ups"`
-	Comments int    `json:"num_comments" mapstructure:"num_comments"`
-	Date     uint64 `json:"created_utc" mapstructure:"created_utc"`
+	Upvotes   int    `json:"ups" mapstructure:"ups"`
+	Comments  int    `json:"num_comments" mapstructure:"num_comments"`
+	Date      uint64 `json:"created_utc" mapstructure:"created_utc"` //time of creation
+	QueryDate uint64 //time of recieval from the API
 }
 
 func (r *RedditContent) UnmarshalJSON(data []byte) error {
@@ -38,7 +39,7 @@ func (r *RedditContent) UnmarshalJSON(data []byte) error {
 	if f, exists := obj["created_utc"]; exists {
 		obj["created_utc"] = uint64(f.(float64)) //make this floating point field an int
 	}
-	
+
 	mapstructure.Decode(obj, r)
 
 	return nil
@@ -83,10 +84,10 @@ func (r redditApiHandler) GetNewestPosts(subreddit string, num int) ([]RedditCon
 	}
 
 	//our nested function to call api. Used in loop below
-	callApi := func(url string) (*responseParserStruct, error) {
+	callApi := func(url string) (*responseParserStruct, uint64, error) {
 		request, err := http.NewRequest("GET", url, nil)
 		if err != nil {
-			return nil, err
+			return nil, 0, err
 		}
 
 		populateStandardHeaders(&request.Header, r.accessToken)
@@ -94,12 +95,18 @@ func (r redditApiHandler) GetNewestPosts(subreddit string, num int) ([]RedditCon
 		r.rateLimiter.Wait(context.Background())
 		response, err := http.DefaultClient.Do(request)
 		if err != nil {
-			return nil, err
+			return nil, 0, err
 		}
 
 		//unauthorized
 		if response.StatusCode != 200 {
-			return nil, errors.New(response.Status + " recieved querying reddit")
+			return nil, 0, errors.New(response.Status + " recieved querying reddit")
+		}
+
+		//getting the time this response was sent
+		timeSent, err := getTimeOfSending(response)
+		if err != nil {
+			return nil, 0, errors.New("error querying date of response:\n" + err.Error())
 		}
 
 		responseBody, _ := ioutil.ReadAll(response.Body)
@@ -108,10 +115,10 @@ func (r redditApiHandler) GetNewestPosts(subreddit string, num int) ([]RedditCon
 		var responseBodyJson responseParserStruct
 		err = json.Unmarshal(responseBody, &responseBodyJson)
 		if err != nil {
-			return nil, errors.New("error parsing JSON response:\n" + err.Error())
+			return nil, 0, errors.New("error parsing JSON response:\n" + err.Error())
 		}
 
-		return &responseBodyJson, nil
+		return &responseBodyJson, timeSent, nil
 	}
 
 	/*
@@ -144,7 +151,7 @@ func (r redditApiHandler) GetNewestPosts(subreddit string, num int) ([]RedditCon
 			url = url + "&after=" + after
 		}
 
-		response, err := callApi(url)
+		response, timeSent, err := callApi(url)
 		if err != nil {
 			return nil, fmt.Errorf("error calling reddit api on iteration %d:\n%s", currentCall+1, err.Error())
 		}
@@ -161,6 +168,7 @@ func (r redditApiHandler) GetNewestPosts(subreddit string, num int) ([]RedditCon
 		for _, post := range response.Data.Children {
 			results[results_index] = post.Data
 			results[results_index].ContentType = post.ContentType
+			results[results_index].QueryDate = timeSent
 			results_index += 1
 		}
 
@@ -186,9 +194,15 @@ func (r redditApiHandler) FetchPosts(IDs []Fullname) (*ContentGroup, error) {
 	numListings := len(IDs)
 	totalCalls := int(math.Ceil(float64(numListings) / limit))
 
+	//wrapper for returned items of fetchBatch func
+	type fetchBatchReturn struct {
+		content []RedditContent
+		timeSent uint64
+	}
+
 	//the concurrent function to request a batch of IDs
 	//given a set of IDs, request their corresponding content from reddit and pipe them into out channel
-	fetchBatch := func(in []Fullname, out chan<- []RedditContent, errChan chan<- error) {
+	fetchBatch := func(in []Fullname, out chan<- fetchBatchReturn, errChan chan<- error) {
 		//construct the url
 		//see reddit api documentation on /api/info
 		var url_builder strings.Builder
@@ -219,6 +233,13 @@ func (r redditApiHandler) FetchPosts(IDs []Fullname) (*ContentGroup, error) {
 			return
 		}
 
+		//getting the time this response was sent
+		timeSent, err := getTimeOfSending(response)
+		if err != nil {
+			errChan <- errors.New("error querying date of response:\n" + err.Error())
+			return
+		}
+
 		responseBody, _ := ioutil.ReadAll(response.Body)
 
 		//parsing response
@@ -233,7 +254,10 @@ func (r redditApiHandler) FetchPosts(IDs []Fullname) (*ContentGroup, error) {
 			redditContentArray[i].ContentType = post.ContentType
 		}
 
-		out <- redditContentArray
+		out <- fetchBatchReturn{
+			content: redditContentArray,
+			timeSent: timeSent,
+		}
 
 	}
 
@@ -251,7 +275,7 @@ func (r redditApiHandler) FetchPosts(IDs []Fullname) (*ContentGroup, error) {
 	}
 
 	//send out the batch requests
-	out := make(chan []RedditContent)
+	out := make(chan fetchBatchReturn)
 	errChan := make(chan error)
 
 	r.rateLimiter.WaitN(context.Background(), totalCalls)
@@ -264,7 +288,8 @@ func (r redditApiHandler) FetchPosts(IDs []Fullname) (*ContentGroup, error) {
 	for i := 0; i < totalCalls; i += 1 {
 		select {
 		case result := <-out: //a response was successfully recieved and processed
-			for _, content := range result {
+			for _, content := range result.content {
+				content.QueryDate = result.timeSent
 				contentMap[content.FullId()] = content
 			}
 		case err := <-errChan: //not successful
