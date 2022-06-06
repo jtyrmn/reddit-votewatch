@@ -61,4 +61,7 @@ func main() {
 	for _, val := range data3 {
 		fmt.Println(val)
 	}
+
+	fmt.Println("\nupdating records...")
+	conn.RecordNewData(*data2)
 }
