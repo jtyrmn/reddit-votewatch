@@ -7,6 +7,7 @@ import (
 	"github.com/joho/godotenv"
 	"github.com/jtyrmn/reddit-votewatch/database"
 	"github.com/jtyrmn/reddit-votewatch/reddit"
+	"github.com/jtyrmn/reddit-votewatch/scheduler"
 )
 
 func main() {
@@ -16,52 +17,16 @@ func main() {
 		log.Fatal("error loading .env file")
 	}
 
-	client := reddit.Connect()
-	fmt.Println(client)
-
-	fmt.Println("\ngetting data...")
-	data, err := client.GetNewestPosts("dwarffortress", 5)
+	reddit, err := reddit.Connect()
 	if err != nil {
-		panic(err)
+		log.Fatal("error connecting to reddit:\n" + err.Error())
 	}
-	for _, p := range data {
-		fmt.Println(p)
-	}
-	fmt.Println(len(data), "posts recieved")
+	fmt.Println(reddit)
 
-	fmt.Println("\nre-requesting data...")
-	IDs := make([]reddit.Fullname, len(data))
-	for i := range IDs {
-		IDs[i] = data[i].FullId()
-	}
-
-	data2, err := client.FetchPosts(IDs)
+	database, err := database.Connect()
 	if err != nil {
-		panic(err)
+		log.Fatal("error connecting to database:\n" + err.Error())
 	}
 
-	for _, post := range *data2 {
-		//fmt.Printf("%s: %s\n", ID, post.Title)
-		fmt.Println(post)
-	}
-
-	fmt.Println("\nconnecting to db...")
-	conn, err := database.Connect()
-	if err != nil {
-		panic(err)
-	}
-
-	fmt.Println("sending to db...")
-	conn.SaveListings(*data2)
-
-	fmt.Println("recieving from db...")
-	data3 := make(reddit.ContentGroup)
-	conn.RecieveListings(data3)
-
-	for _, val := range data3 {
-		fmt.Println(val)
-	}
-
-	fmt.Println("\nupdating records...")
-	conn.RecordNewData(*data2)
+	scheduler.Start(reddit, database)
 }

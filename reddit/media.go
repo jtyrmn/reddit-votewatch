@@ -196,7 +196,7 @@ func (r redditApiHandler) FetchPosts(IDs []Fullname) (*ContentGroup, error) {
 
 	//wrapper for returned items of fetchBatch func
 	type fetchBatchReturn struct {
-		content []RedditContent
+		content  []RedditContent
 		timeSent uint64
 	}
 
@@ -255,7 +255,7 @@ func (r redditApiHandler) FetchPosts(IDs []Fullname) (*ContentGroup, error) {
 		}
 
 		out <- fetchBatchReturn{
-			content: redditContentArray,
+			content:  redditContentArray,
 			timeSent: timeSent,
 		}
 

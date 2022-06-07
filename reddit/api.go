@@ -9,8 +9,6 @@ import (
 	"errors"
 	"fmt"
 	"io/ioutil"
-	"log"
-	"math"
 	"net/http"
 	"os"
 	"strconv"
@@ -100,7 +98,7 @@ func (r redditApiHandler) String() string {
 //OAuth2 authentication. Unless data is pulled from cache, this function will call the reddit api
 
 //make sure you have all the env variables assigned before calling this
-func Connect() redditApiHandler {
+func Connect() (*redditApiHandler, error) {
 	client := redditApiHandler{
 		clientId:         util.GetEnv("REDDIT_CLIENT_ID"),
 		clientSecret:     util.GetEnv("REDDIT_CLIENT_SECRET"),
@@ -146,7 +144,7 @@ func Connect() redditApiHandler {
 
 		if err != nil {
 			//cannot obtain an access token at all. Stop the program
-			log.Fatal("error querying reddit api for access token:\n" + err.Error())
+			return nil, errors.New("error querying reddit api for access token:\n" + err.Error())
 		}
 
 		fmt.Println("recieved access token")
@@ -163,10 +161,7 @@ func Connect() redditApiHandler {
 		}
 	}
 
-	//start the access token refresh scheduler
-	go client.startTokenRefreshCycle()
-
-	return client
+	return &client, nil
 }
 
 //call reddit and request an access token
@@ -218,11 +213,10 @@ func fetchAccessToken(client redditApiHandler) (*accessTokenResponse, error) {
 	return &responseJSON, nil
 }
 
-//once this function is called, it will repeatedly schedule times at which it will refresh the access token
-//should be called as a go routine
-func (r *redditApiHandler) startTokenRefreshCycle() {
-	//calculate the interval amount in seconds
-	//more info on TOKEN_REFRESH_LENIENCY in .env.template
+// time until the token needs to be refreshed again
+func (a accessTokenResponse) TimeToNextRefresh() time.Duration {
+
+	//see the .env.template file for info on leniency and TOKEN_REFRESH_LENIENCY
 	leniency, err := strconv.ParseFloat(util.GetEnvDefault("TOKEN_REFRESH_LENIENCY", "0.99"), 32)
 	if err != nil {
 		fmt.Println("warning: env variable TOKEN_REFRESH_LENIENCY unreadable. Defaulting to 0.99...")
@@ -241,40 +235,37 @@ func (r *redditApiHandler) startTokenRefreshCycle() {
 		fmt.Printf("warning: leniency %f is very high. This will likely result in errors later\n", leniency)
 	}
 
-	//how long before the expiration date until it's time to refresh
-	delay_sub := float64(r.accessToken.ExpireLength) * (1.0 - leniency)
+	delay := float64(a.InitializationTime+a.ExpireLength-time.Now().Unix()) * leniency
 
-	regular_delay := float64(r.accessToken.ExpireLength) - delay_sub
-
-	for {
-		tokenRefreshCycleIteration(r, regular_delay)
+	//dont want it to be negative, some functions in time package panic with negative values
+	//can't even be 0 either or else NewTicker panics
+	if delay < 1 {
+		delay = 1
 	}
+
+	return time.Second * time.Duration(delay)
 }
 
-func tokenRefreshCycleIteration(r *redditApiHandler, regular_delay float64) {
-	defer func() {
-		if r := recover(); r != nil {
-			fmt.Printf("error during token refresh cycle:\n%s\n", r)
-		}
-	}()
+func (r *redditApiHandler) TimeToNextRefresh() time.Duration {
+	return r.accessToken.TimeToNextRefresh()
+}
 
-	//wait until token is about to expire
-	//either the regular delay of every loop or incase the token was taken from a cache and is older than expected. Whatever is smaller
-	delay := math.Min(regular_delay, float64(r.accessToken.InitializationTime+r.accessToken.ExpireLength-time.Now().Unix()))
-	time.Sleep(time.Second * time.Duration(delay))
+//refresh the access token
+func (r *redditApiHandler) Refresh() error {
 
-	//refresh token
-	fmt.Println("refreshing token...")
 	token, err := fetchAccessToken(*r)
 	if err != nil {
-		panic(err)
+		return err
 	}
-
 	r.accessToken = *token
+
+	//attempt to cache it
 	if r.cacheAccessToken {
 		err = r.accessToken.cache()
 		if err != nil {
-			panic(err)
+			fmt.Println("warning: unable to cache access token:\n" + err.Error())
 		}
 	}
+
+	return nil
 }
