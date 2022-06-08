@@ -5,9 +5,7 @@ import (
 	"log"
 
 	"github.com/joho/godotenv"
-	"github.com/jtyrmn/reddit-votewatch/database"
 	"github.com/jtyrmn/reddit-votewatch/reddit"
-	"github.com/jtyrmn/reddit-votewatch/scheduler"
 )
 
 func main() {
@@ -17,16 +15,23 @@ func main() {
 		log.Fatal("error loading .env file")
 	}
 
-	reddit, err := reddit.Connect()
+	r, err := reddit.Connect()
 	if err != nil {
 		log.Fatal("error connecting to reddit:\n" + err.Error())
 	}
-	fmt.Println(reddit)
+	fmt.Println(r)
 
-	database, err := database.Connect()
-	if err != nil {
-		log.Fatal("error connecting to database:\n" + err.Error())
+	// database, err := database.Connect()
+	// if err != nil {
+	// 	log.Fatal("error connecting to database:\n" + err.Error())
+	// }
+
+	// scheduler.Start(reddit, database)
+
+	f := reddit.Fullname("t3_v7e2ci")
+	d, _ := r.GetNewestPosts("unturned", 100, &f)
+	for _, p := range d {
+		fmt.Printf("%s: %s\n", p.FullId(), p.Title)
 	}
-
-	scheduler.Start(reddit, database)
+	fmt.Println(len(d))
 }

@@ -78,7 +78,8 @@ type responseParserStruct struct {
 //get the <num> latest posts at a specific subreddit
 //it's important to note that exactly <num> posts being returned is not garanteed. Their might be 100 <num> posts on the subreddit, and other cases
 //note: (non-concurrent) api calls are done in groups of 100 listings. So 101 requests will block for twice as long as 100 requests
-func (r redditApiHandler) GetNewestPosts(subreddit string, num int) ([]RedditContent, error) {
+//while process recieved posts up to last (unless last is nil)
+func (r redditApiHandler) GetNewestPosts(subreddit string, num int, last *Fullname) ([]RedditContent, error) {
 	if num <= 0 {
 		return nil, fmt.Errorf("num %d must be positive", num)
 	}
@@ -140,7 +141,11 @@ func (r redditApiHandler) GetNewestPosts(subreddit string, num int) ([]RedditCon
 	listingsNeeded := num                              //keep track of how many listings we need per iteration (for limit= param)
 	after := ""
 
-	for currentCall := 0; currentCall < totalCalls; currentCall += 1 {
+	//whether we should keep checking if each listing in the last 
+	checkLast := last != nil
+	reachedLast := false
+
+	for currentCall := 0; currentCall < totalCalls && !reachedLast; currentCall += 1 {
 		currentListingsNeeded := listingsNeeded
 		if currentListingsNeeded > limit {
 			currentListingsNeeded = limit
@@ -166,14 +171,25 @@ func (r redditApiHandler) GetNewestPosts(subreddit string, num int) ([]RedditCon
 
 		//fill the results array with this iteration's 100 or less listings
 		for _, post := range response.Data.Children {
+			post.Data.ContentType = post.ContentType
+			post.Data.QueryDate = timeSent
+
+			if checkLast && post.Data.FullId() == *last {
+				//stop processing any more listings
+				reachedLast = true
+				break
+			}
+
 			results[results_index] = post.Data
-			results[results_index].ContentType = post.ContentType
-			results[results_index].QueryDate = timeSent
 			results_index += 1
 		}
 
 		if totalCalls > 1 {
-			fmt.Printf("batch request %d/%d done\n", currentCall+1, totalCalls)
+			if reachedLast {
+				fmt.Printf("batch request %d/%d reached last and done\n", currentCall+1, totalCalls)
+			} else {
+				fmt.Printf("batch request %d/%d done\n", currentCall+1, totalCalls)
+			}
 		}
 
 		listingsNeeded -= limit
