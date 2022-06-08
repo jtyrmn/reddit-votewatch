@@ -21,17 +21,17 @@ func main() {
 	}
 	fmt.Println(r)
 
-	// database, err := database.Connect()
-	// if err != nil {
-	// 	log.Fatal("error connecting to database:\n" + err.Error())
+	// // database, err := database.Connect()
+	// // if err != nil {
+	// // 	log.Fatal("error connecting to database:\n" + err.Error())
+	// // }
+
+	// // scheduler.Start(reddit, database)
+
+	// f := reddit.Fullname("t3_v7zzrm")
+	// d, _ := r.GetNewestPosts("wallstreetbets", 20, &f)
+	// for _, p := range d {
+	// 	fmt.Printf("%s: %s\n", p.FullId(), p.Title)
 	// }
-
-	// scheduler.Start(reddit, database)
-
-	f := reddit.Fullname("t3_v7e2ci")
-	d, _ := r.GetNewestPosts("unturned", 100, &f)
-	for _, p := range d {
-		fmt.Printf("%s: %s\n", p.FullId(), p.Title)
-	}
-	fmt.Println(len(d))
+	// fmt.Println(len(d))
 }
