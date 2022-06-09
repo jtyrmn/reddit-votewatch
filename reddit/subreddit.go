@@ -16,7 +16,9 @@ type subreddit struct {
 	last Fullname //last post queried on this subreddit, see GetNewestPosts
 }
 
-func (r redditApiHandler) getSubredditsFromFile() ([]subreddit, error) {
+//gets a list of subreddits defined in SUBREDDITS_PATH
+//see subreddits.json.template
+func  getSubredditsFromFile() ([]subreddit, error) {
 	//get the location of it
 	path := util.GetEnv("SUBREDDITS_PATH")
 	if _, err := os.Stat(path); errors.Is(err, os.ErrNotExist) {
@@ -29,6 +31,7 @@ func (r redditApiHandler) getSubredditsFromFile() ([]subreddit, error) {
 		return nil, errors.New("error reading subreddits file:\n" + err.Error())
 	}
 	
+	//SUBREDDITS_PATH file is a json object with a "subreddits" field containing an array of strings
 	type jsonStruct struct {
 		Subreddits []string `json:"subreddits"`
 	}

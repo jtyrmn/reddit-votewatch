@@ -79,7 +79,7 @@ type responseParserStruct struct {
 //it's important to note that exactly <num> posts being returned is not garanteed. Their might be 100 <num> posts on the subreddit, and other cases
 //note: (non-concurrent) api calls are done in groups of 100 listings. So 101 requests will block for twice as long as 100 requests
 //while process recieved posts up to last (unless last is nil)
-func (r redditApiHandler) GetNewestPosts(subreddit string, num int, last *Fullname) ([]RedditContent, error) {
+func (r redditApiHandler) getNewestPosts(subreddit string, num int, last *Fullname) ([]RedditContent, error) {
 	if num <= 0 {
 		return nil, fmt.Errorf("num %d must be positive", num)
 	}
@@ -323,4 +323,67 @@ func (r redditApiHandler) FetchPosts(IDs []Fullname) (*ContentGroup, error) {
 	}
 
 	return &contentMap, nil
+}
+
+//this function is called on a routine to fetch all the newly created posts from the subreddit list and add them to the tracked posts
+func (r redditApiHandler) TrackNewlyCreatedPosts() int {
+	TEMP := 10
+
+	//just holds the output of task func
+	type taskResult struct {
+		result []RedditContent
+		trackPosts bool
+		err error
+	}
+
+	//do a new goroutine for each subreddit
+	task := func(sub *subreddit, out chan<- taskResult) {
+		var last *Fullname = nil
+		if sub.last != "" {
+			last = &sub.last
+		}
+
+		//whether or not we should actually save any posts this iteration for this subreddit. We only want to save posts if last is set, or else the posts we recieved were untracked for some time before recieving them
+		trackPosts := last != nil
+
+		result, err := r.getNewestPosts(sub.name, TEMP, last)
+		if err != nil {
+			out <- taskResult{nil, false, fmt.Errorf("error getting posts from %s:\n", err.Error())}
+			return
+		}
+
+		//the newest post recieved is now the last post seen in this subreddit  
+		if len(result) > 0 {
+			sub.last = result[0].FullId()
+		}
+
+		out <- taskResult{result, trackPosts, nil}
+	}
+
+	out := make(chan taskResult)
+	for idx := range r.subreddits {
+		go task(&r.subreddits[idx], out)
+	}
+
+	postsTracked := 0 //keep count
+
+	//recieve the channels and add the new posts to the tracker
+	for i := 0; i < len(r.subreddits); i += 1 {
+		results := <-out
+		if results.err != nil {
+			fmt.Println("warning: " + results.err.Error())
+		}
+
+		if !results.trackPosts {
+			//we don't want to track this subreddit's posts this iteration
+			continue
+		}
+
+		for _, post := range results.result {
+			r.trackedListings[post.FullId()] = post
+			postsTracked += 1
+		}
+	}
+	
+	return postsTracked
 }

@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"strconv"
 )
 
 //get environment variable
@@ -26,4 +27,16 @@ func GetEnvDefault(str string, def string) string {
 	}
 
 	return v
+}
+
+//get an integer
+func GetEnvInt(str string) int {
+	v := GetEnv(str)
+
+	i, err := strconv.ParseInt(v, 10, 32)
+	if err != nil {
+		log.Fatalf("cannot parse environment variable %s=%s:%s halting executing...\n", str, v, err.Error())
+	}
+
+	return int(i)
 }

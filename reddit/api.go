@@ -87,11 +87,17 @@ type redditApiHandler struct {
 
 	//rate limiting
 	rateLimiter rate.Limiter
+
+	//subreddits to track
+	subreddits []subreddit
+
+	//posts to track
+	trackedListings ContentGroup
 }
 
 //dont want to print out private secrets + passwords while debugging
 func (r redditApiHandler) String() string {
-	return fmt.Sprintf("{%s %v %s <REDACTED> %s <REDACTED>}", r.accessToken, r.cacheAccessToken, r.clientId, r.redditUsername)
+	return fmt.Sprintf("{%s %v %s <REDACTED> %s <REDACTED> %s}", r.accessToken, r.cacheAccessToken, r.clientId, r.redditUsername, r.subreddits)
 }
 
 //Connect() creates a reddit api client and also initializes
@@ -112,7 +118,17 @@ func Connect() (*redditApiHandler, error) {
 			which is the same frequecy but allows for greater bursts. I assume the 60 requests per minute means they don't want to deal with 600-request bursts
 		*/
 		rateLimiter: *rate.NewLimiter(rate.Every(time.Minute), 60),
+		
 	}
+
+	//get subreddits as well
+	subreddits, err := getSubredditsFromFile()
+	if err != nil {
+		return nil, errors.New("error getting subreddits from file:\n" + err.Error())
+	}
+	client.subreddits = subreddits
+
+	client.trackedListings = make(ContentGroup)
 
 	//recieve access token, either by cache or request to api
 	lookupAccessTokenCache := client.cacheAccessToken
@@ -214,7 +230,7 @@ func fetchAccessToken(client redditApiHandler) (*accessTokenResponse, error) {
 }
 
 // time until the token needs to be refreshed again
-func (a accessTokenResponse) TimeToNextRefresh() time.Duration {
+func (a accessTokenResponse) TimeToNextTokenRefresh() time.Duration {
 
 	//see the .env.template file for info on leniency and TOKEN_REFRESH_LENIENCY
 	leniency, err := strconv.ParseFloat(util.GetEnvDefault("TOKEN_REFRESH_LENIENCY", "0.99"), 32)
@@ -246,12 +262,12 @@ func (a accessTokenResponse) TimeToNextRefresh() time.Duration {
 	return time.Second * time.Duration(delay)
 }
 
-func (r *redditApiHandler) TimeToNextRefresh() time.Duration {
-	return r.accessToken.TimeToNextRefresh()
+func (r *redditApiHandler) TimeToNextTokenRefresh() time.Duration {
+	return r.accessToken.TimeToNextTokenRefresh()
 }
 
 //refresh the access token
-func (r *redditApiHandler) Refresh() error {
+func (r *redditApiHandler) TokenRefresh() error {
 
 	token, err := fetchAccessToken(*r)
 	if err != nil {
