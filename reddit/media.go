@@ -75,6 +75,23 @@ type responseParserStruct struct {
 	}
 }
 
+//converts the tracked reddit posts ContentGroup to a slice of IDs
+func(r redditApiHandler) GetTrackedIDs() []Fullname {
+	list := make([]Fullname, len(r.trackedListings))
+	
+	idx := 0
+	for ID := range r.trackedListings {
+		list[idx] = ID
+		idx += 1
+	}
+
+	return list
+}
+
+func(r redditApiHandler) GetTrackedPosts() ContentGroup {
+	return r.trackedListings
+}
+
 //get the <num> latest posts at a specific subreddit
 //it's important to note that exactly <num> posts being returned is not garanteed. Their might be 100 <num> posts on the subreddit, and other cases
 //note: (non-concurrent) api calls are done in groups of 100 listings. So 101 requests will block for twice as long as 100 requests
@@ -326,7 +343,7 @@ func (r redditApiHandler) FetchPosts(IDs []Fullname) (*ContentGroup, error) {
 }
 
 //this function is called on a routine to fetch all the newly created posts from the subreddit list and add them to the tracked posts
-func (r redditApiHandler) TrackNewlyCreatedPosts() int {
+func (r *redditApiHandler) TrackNewlyCreatedPosts() int {
 	TEMP := 10
 
 	//just holds the output of task func

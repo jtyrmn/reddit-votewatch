@@ -48,6 +48,10 @@ func Connect() (*connection, error) {
 //as a result, you should use this function to save listings that were recently created on reddit (probably not in the database yet)
 func (c connection) SaveListings(listings reddit.ContentGroup) error {
 
+	if len(listings) == 0 {
+		return nil
+	}
+
 	//convert all the items in listings to a bson-friendly array before sending it off to the db
 	documents := make([]interface{}, len(listings))
 	documents_idx := 0
@@ -57,8 +61,12 @@ func (c connection) SaveListings(listings reddit.ContentGroup) error {
 	}
 
 	_, err := c.listings.InsertMany(context.Background(), documents)
-
-	return err
+	//error handling mongodb driver is complex so I will this until later. It's not like program state is going to change if an error occurs here
+	//TODO
+	if err != nil && !isDuplicateKeyError(err){ //ignore duplicate key errors, those are expected
+		return err
+	}
+	return nil
 }
 
 //pulls *all* the listings from the database and places it into the set parameter.
@@ -95,6 +103,10 @@ func (c connection) RecieveListings(set reddit.ContentGroup) error {
 //Records all the listings in newData as entries in the database under their respective listings
 func (c connection) RecordNewData(newData reddit.ContentGroup) error {
 
+	if len(newData) == 0 {
+		return nil
+	}
+
 	//template for a single entry under a listing
 	type record struct {
 		Upvotes  int
@@ -111,7 +123,6 @@ func (c connection) RecordNewData(newData reddit.ContentGroup) error {
 			Comments: listing.Comments,
 			Date:     listing.QueryDate,
 		}
-
 		model := mongo.NewUpdateOneModel().SetFilter(bson.D{{"_id", id}}).SetUpdate(bson.D{{"$push", bson.D{{"entries", r}}}})
 
 		models[modelsIdx] = model
@@ -124,4 +135,19 @@ func (c connection) RecordNewData(newData reddit.ContentGroup) error {
 	}
 
 	return nil
+}
+
+func isDuplicateKeyError(err error) bool {
+	conv, ok := err.(mongo.BulkWriteException)
+	if !ok {
+		return false
+	}
+
+	for _, writeError := range conv.WriteErrors {
+		if writeError.Code == 11000 { //mongodb error code for duplicate key
+			return true
+		}
+	}
+
+	return false
 }
