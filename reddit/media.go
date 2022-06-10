@@ -76,9 +76,9 @@ type responseParserStruct struct {
 }
 
 //converts the tracked reddit posts ContentGroup to a slice of IDs
-func(r redditApiHandler) GetTrackedIDs() []Fullname {
+func (r redditApiHandler) GetTrackedIDs() []Fullname {
 	list := make([]Fullname, len(r.trackedListings))
-	
+
 	idx := 0
 	for ID := range r.trackedListings {
 		list[idx] = ID
@@ -88,7 +88,7 @@ func(r redditApiHandler) GetTrackedIDs() []Fullname {
 	return list
 }
 
-func(r redditApiHandler) GetTrackedPosts() ContentGroup {
+func (r redditApiHandler) GetTrackedPosts() ContentGroup {
 	return r.trackedListings
 }
 
@@ -158,7 +158,7 @@ func (r redditApiHandler) getNewestPosts(subreddit string, num int, last *Fullna
 	listingsNeeded := num                              //keep track of how many listings we need per iteration (for limit= param)
 	after := ""
 
-	//whether we should keep checking if each listing in the last 
+	//whether we should keep checking if each listing in the last
 	checkLast := last != nil
 	reachedLast := false
 
@@ -327,9 +327,8 @@ func (r redditApiHandler) FetchPosts(IDs []Fullname) (*ContentGroup, error) {
 			}
 		case err := <-errChan: //not successful
 			//apparently im supposed to use an errgroup instead of an error channel for this? idk
-			fmt.Printf("error during batch request %d:\n%s\n", i+1, err.Error())
+			fmt.Printf("warning: error during batch request %d:\n%s\n", i+1, err.Error())
 		}
-		fmt.Printf("batch request %d/%d done\n", i+1, totalCalls)
 	}
 
 	//check over all our IDs to make sure they were inserted
@@ -348,9 +347,9 @@ func (r *redditApiHandler) TrackNewlyCreatedPosts() int {
 
 	//just holds the output of task func
 	type taskResult struct {
-		result []RedditContent
+		result     []RedditContent
 		trackPosts bool
-		err error
+		err        error
 	}
 
 	//do a new goroutine for each subreddit
@@ -369,7 +368,7 @@ func (r *redditApiHandler) TrackNewlyCreatedPosts() int {
 			return
 		}
 
-		//the newest post recieved is now the last post seen in this subreddit  
+		//the newest post recieved is now the last post seen in this subreddit
 		if len(result) > 0 {
 			sub.last = result[0].FullId()
 		}
@@ -401,6 +400,6 @@ func (r *redditApiHandler) TrackNewlyCreatedPosts() int {
 			postsTracked += 1
 		}
 	}
-	
+
 	return postsTracked
 }

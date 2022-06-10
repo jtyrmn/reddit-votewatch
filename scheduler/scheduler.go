@@ -1,6 +1,7 @@
 package scheduler
 
 import (
+	"errors"
 	"fmt"
 	"time"
 
@@ -32,12 +33,7 @@ type databaseConnectionScheduler interface {
 //this function starts a forever loops that goes over all the events of both the reddit and database handler simultaneously
 func Start(reddit redditApiHandlerScheduler, database databaseConnectionScheduler) {
 	//before starting the loop, pull pre-existing listings from db
-	fmt.Println("pulling from db...")
-	insertions, err := database.RecieveListings(reddit.GetTrackedPosts())  //reddit API handler's tracked posts <<< posts from db
-	if err != nil {
-		fmt.Println("warning: error recieving listings from database:\n" + err.Error())
-	}
-	fmt.Printf("%d posts recieved from database\n", insertions)
+	pullFromDB(reddit, database)
 
 	//ticker for reddit token refresh
 	redditTicker := time.NewTicker(reddit.TimeToNextTokenRefresh())
@@ -51,47 +47,81 @@ func Start(reddit redditApiHandlerScheduler, database databaseConnectionSchedule
 	for {
 		select {
 		case <-redditTicker.C:
-			fmt.Println("refreshing access token...")
-			err := reddit.TokenRefresh()
-			if err != nil {
-				fmt.Println("error refreshing access token:\n" + err.Error())
-			}
-			redditTicker.Reset(reddit.TimeToNextTokenRefresh())
+			refreshToken(reddit, *redditTicker)
 
 		case <-newPostsTicker.C:
-			fmt.Println("fetching new posts...")
-			count := reddit.TrackNewlyCreatedPosts()
-			fmt.Printf("%d new posts tracked\n", count)
-			fmt.Printf("%d total posts tracked\n", len(reddit.GetTrackedIDs()))
-
-			fmt.Println("saving posts...")
-			err := database.SaveListings(reddit.GetTrackedPosts())
-			if err != nil {
-				fmt.Println("error saving posts:\n" + err.Error())
-			}
+			fetchNewPosts(reddit, database)
 
 		case <-updatePostsTicker.C:
-			fmt.Println("updating posts...")
 			err := updateTrackedPosts(reddit, database)
 			if err != nil {
-				fmt.Println("error updating:\n" + err.Error())
+				logOutputError("error updating:\n" + err.Error())
 			}
 		}
+		fmt.Println() //create spacing between the different events
+	}
+}
+
+//following functions are just wrappers for self-explanatory behaviour
+
+func pullFromDB(reddit redditApiHandlerScheduler, database databaseConnectionScheduler) {
+	logOutput("pulling from db...")
+	insertions, err := database.RecieveListings(reddit.GetTrackedPosts()) //reddit API handler's tracked posts <<< posts from db
+	if err != nil {
+		logOutputError("warning: error recieving listings from database:\n" + err.Error())
+	}
+	logOutput(fmt.Sprintf("%d posts recieved from database\n", insertions))
+}
+
+func refreshToken(reddit redditApiHandlerScheduler, redditTicker time.Ticker) {
+	logOutput("refreshing access token...")
+	err := reddit.TokenRefresh()
+	if err != nil {
+		logOutputError("error refreshing access token:\n" + err.Error())
+	}
+	redditTicker.Reset(reddit.TimeToNextTokenRefresh())
+}
+
+func fetchNewPosts(reddit redditApiHandlerScheduler, database databaseConnectionScheduler) {
+	logOutput("fetching new posts...")
+	count := reddit.TrackNewlyCreatedPosts()
+	logOutput(fmt.Sprintf("%d new posts tracked", count))
+	logOutput(fmt.Sprintf("%d total posts tracked", len(reddit.GetTrackedPosts())))
+
+	if count == 0 { //no need to save new posts if there are no new posts
+		return
+	}
+	
+	logOutput("saving posts...")
+	err := database.SaveListings(reddit.GetTrackedPosts())
+	if err != nil {
+		logOutputError("error saving posts:\n" + err.Error())
 	}
 }
 
 func updateTrackedPosts(reddit redditApiHandlerScheduler, database databaseConnectionScheduler) error {
-	// IDs := reddit.GetTrackedIDs()
+	logOutput("updating posts...")
 
-	// posts, err := reddit.FetchPosts(IDs)
-	// if err != nil {
-	// 	return errors.New("error fetching posts from reddit:\n" + err.Error())
-	// }
+	IDs := reddit.GetTrackedIDs()
 
-	// err = database.RecordNewData(*posts)
-	// if err != nil {
-	// 	return errors.New("error recording data in database:\n" + err.Error())
-	// }
+	posts, err := reddit.FetchPosts(IDs)
+	if err != nil {
+		return errors.New("error fetching posts from reddit:\n" + err.Error())
+	}
+
+	err = database.RecordNewData(*posts)
+	if err != nil {
+		return errors.New("error recording data in database:\n" + err.Error())
+	}
 
 	return nil
+}
+
+//pretty formatted printing
+func logOutput(str string) {
+	fmt.Printf("\033[0;36m%s\033[0m: %s\n", time.Now().Format(time.ANSIC), str)
+}
+
+func logOutputError(str string) {
+	fmt.Printf("\033[0;36m%s\033[0m: \033[0;31m%s\033[0m\n", time.Now().Format(time.ANSIC), str)
 }
