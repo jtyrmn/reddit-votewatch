@@ -72,12 +72,14 @@ func (c connection) SaveListings(listings reddit.ContentGroup) error {
 //pulls *all* the listings from the database and places it into the set parameter.
 //doesn't replace pre-existing duplicate, probably more up-to-date, listings in set however
 //TODO: once the db starts storing dates, only return listings that are below a certain age
-func (c connection) RecieveListings(set reddit.ContentGroup) error {
+//returns # of listings inserted into set
+func (c connection) RecieveListings(set reddit.ContentGroup) (int, error) {
 	data, err := c.listings.Find(context.Background(), bson.D{})
 	if err != nil {
-		return err
+		return 0, err
 	}
 
+	countInsertions := 0
 	for data.Next(context.Background()) {
 		var d document
 		data.Decode(&d)
@@ -95,9 +97,10 @@ func (c connection) RecieveListings(set reddit.ContentGroup) error {
 		}
 
 		set[d.Id] = d.Listing
+		countInsertions += 1
 	}
 
-	return nil
+	return countInsertions, nil
 }
 
 //Records all the listings in newData as entries in the database under their respective listings

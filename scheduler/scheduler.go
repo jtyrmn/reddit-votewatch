@@ -22,17 +22,25 @@ type redditApiHandlerScheduler interface {
 }
 
 type databaseConnectionScheduler interface {
-	RecordNewData(newData reddit.ContentGroup) error
+	RecordNewData(reddit.ContentGroup) error
 
-	SaveListings(listings reddit.ContentGroup) error
+	SaveListings(reddit.ContentGroup) error
+
+	RecieveListings(reddit.ContentGroup) (int, error)
 }
 
 //this function starts a forever loops that goes over all the events of both the reddit and database handler simultaneously
 func Start(reddit redditApiHandlerScheduler, database databaseConnectionScheduler) {
+	//before starting the loop, pull pre-existing listings from db
+	fmt.Println("pulling from db...")
+	insertions, err := database.RecieveListings(reddit.GetTrackedPosts())  //reddit API handler's tracked posts <<< posts from db
+	if err != nil {
+		fmt.Println("warning: error recieving listings from database:\n" + err.Error())
+	}
+	fmt.Printf("%d posts recieved from database\n", insertions)
 
 	//ticker for reddit token refresh
 	redditTicker := time.NewTicker(reddit.TimeToNextTokenRefresh())
-	fmt.Println("waiting on rt")
 
 	//ticker for fetching new posts
 	newPostsTicker := time.NewTicker(time.Second * time.Duration(util.GetEnvInt("NEW_POSTS_REFRESH_PERIOD")))
