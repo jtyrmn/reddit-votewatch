@@ -64,7 +64,7 @@ func (c connection) SaveListings(listings reddit.ContentGroup) error {
 	_, err := c.listings.InsertMany(context.Background(), documents)
 	//error handling mongodb driver is complex so I will this until later. It's not like program state is going to change if an error occurs here
 	//TODO
-	if err != nil && !isDuplicateKeyError(err){ //ignore duplicate key errors, those are expected
+	if err != nil && !isDuplicateKeyError(err) { //ignore duplicate key errors, those are expected
 		return err
 	}
 	return nil
@@ -72,7 +72,7 @@ func (c connection) SaveListings(listings reddit.ContentGroup) error {
 
 //pulls *all* the listings from the database and places it into the set parameter.
 //doesn't replace pre-existing duplicate, probably more up-to-date, listings in set however
-//maxAge: only recieve posts that are at most maxAge seconds old 
+//maxAge: only recieve posts that are at most maxAge seconds old
 //returns # of listings inserted into set
 func (c connection) RecieveListings(set reddit.ContentGroup, maxAge int64) (int, error) {
 
@@ -157,4 +157,15 @@ func isDuplicateKeyError(err error) bool {
 	}
 
 	return false
+}
+
+//all posts in the database that are past maxAge seconds old get deleted
+//returns # of listings deleted
+func (c connection) CullListings(maxAge uint64) (int, error) {
+	res, err := c.listings.DeleteMany(context.Background(), bson.D{{"listing.date", bson.D{{"$lt", uint64(time.Now().Unix()) - maxAge}}}})
+	if err != nil {
+		return 0, errors.New("error deleting listings from database:\n" + err.Error())
+	}
+
+	return int(res.DeletedCount), nil
 }

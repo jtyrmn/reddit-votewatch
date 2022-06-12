@@ -30,6 +30,8 @@ type databaseConnectionScheduler interface {
 	SaveListings(reddit.ContentGroup) error
 
 	RecieveListings(reddit.ContentGroup, int64) (int, error)
+
+	CullListings(uint64) (int, error)
 }
 
 //this function starts a forever loops that goes over all the events of both the reddit and database handler simultaneously
@@ -49,6 +51,11 @@ func Start(reddit redditApiHandlerScheduler, database databaseConnectionSchedule
 	//ticker for untracking posts that are past a certain age
 	untrackPostsTicker := time.NewTicker(time.Second * time.Duration(util.GetEnvInt("UNTRACK_POSTS_REFRESH_PERIOD")))
 
+	//ticker for culling old posts
+	cullPostsTicker := time.NewTicker(time.Second * time.Duration(util.GetEnvInt("CULL_POSTS_REFRESH_PERIOD")))
+
+
+	logOutput("starting scheduler\n")
 	for {
 		select {
 		case <-redditTicker.C:
@@ -64,7 +71,10 @@ func Start(reddit redditApiHandlerScheduler, database databaseConnectionSchedule
 			}
 
 		case <-untrackPostsTicker.C:
-			StopTrackingOldPosts(reddit)
+			stopTrackingOldPosts(reddit)
+
+		case <-cullPostsTicker.C:
+			cullDatabase(database)
 		}
 		fmt.Println() //create spacing between the different events
 	}
@@ -128,11 +138,23 @@ func updateTrackedPosts(reddit redditApiHandlerScheduler, database databaseConne
 	return nil
 }
 
-func StopTrackingOldPosts(reddit redditApiHandlerScheduler) {
+func stopTrackingOldPosts(reddit redditApiHandlerScheduler) {
 	untrackedPosts := reddit.StopTrackingOldPosts(uint64(util.GetEnvInt("MAX_TRACKING_AGE")))
 	if untrackedPosts > 0 {
 		logOutput(fmt.Sprintf("no longer tracking %d old posts", untrackedPosts))
 	}
+}
+
+func cullDatabase(database databaseConnectionScheduler) {
+	logOutput("culling posts...")
+
+	deletedPosts, err := database.CullListings(uint64(util.GetEnvInt("CULLING_AGE")))
+	if err != nil {
+		logOutputError("error culling database:\n" + err.Error())
+		return
+	}
+
+	logOutput(fmt.Sprintf("culled %d posts", deletedPosts))
 }
 
 //pretty formatted printing
