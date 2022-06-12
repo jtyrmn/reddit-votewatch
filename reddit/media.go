@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"regexp"
 	"strings"
+	"time"
 
 	"github.com/mitchellh/mapstructure"
 )
@@ -402,4 +403,18 @@ func (r *redditApiHandler) TrackNewlyCreatedPosts() int {
 	}
 
 	return postsTracked
+}
+
+//stop tracking all posts that are over maxAge seconds old
+//returns number of posts untracked
+func (r redditApiHandler) StopTrackingOldPosts(maxAge uint64) int {
+	untrackedPosts := 0
+	for ID, post := range r.trackedListings {
+		if post.Date < uint64(time.Now().Unix()) - maxAge {
+			delete(r.trackedListings, ID)
+			untrackedPosts += 1
+		}
+	}
+
+	return untrackedPosts
 }

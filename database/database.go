@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"time"
 
 	"github.com/jtyrmn/reddit-votewatch/reddit"
 	"github.com/jtyrmn/reddit-votewatch/util"
@@ -71,10 +72,13 @@ func (c connection) SaveListings(listings reddit.ContentGroup) error {
 
 //pulls *all* the listings from the database and places it into the set parameter.
 //doesn't replace pre-existing duplicate, probably more up-to-date, listings in set however
-//TODO: once the db starts storing dates, only return listings that are below a certain age
+//maxAge: only recieve posts that are at most maxAge seconds old 
 //returns # of listings inserted into set
-func (c connection) RecieveListings(set reddit.ContentGroup) (int, error) {
-	data, err := c.listings.Find(context.Background(), bson.D{})
+func (c connection) RecieveListings(set reddit.ContentGroup, maxAge int64) (int, error) {
+
+	maxDate := time.Now().Unix() - int64(maxAge)
+	fmt.Println(maxDate)
+	data, err := c.listings.Find(context.Background(), bson.D{{"listing.date", bson.D{{"$gte", maxDate}}}})
 	if err != nil {
 		return 0, err
 	}

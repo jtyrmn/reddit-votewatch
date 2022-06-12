@@ -20,6 +20,8 @@ type redditApiHandlerScheduler interface {
 
 	GetTrackedIDs() []reddit.Fullname
 	FetchPosts([]reddit.Fullname) (*reddit.ContentGroup, error)
+
+	StopTrackingOldPosts(uint64) int
 }
 
 type databaseConnectionScheduler interface {
@@ -27,7 +29,7 @@ type databaseConnectionScheduler interface {
 
 	SaveListings(reddit.ContentGroup) error
 
-	RecieveListings(reddit.ContentGroup) (int, error)
+	RecieveListings(reddit.ContentGroup, int64) (int, error)
 }
 
 //this function starts a forever loops that goes over all the events of both the reddit and database handler simultaneously
@@ -44,6 +46,9 @@ func Start(reddit redditApiHandlerScheduler, database databaseConnectionSchedule
 	//ticker for downloading fetching new posts and downloading them to db
 	updatePostsTicker := time.NewTicker(time.Second * time.Duration(util.GetEnvInt("UPDATE_TRACKED_POSTS_REFRESH_PERIOD")))
 
+	//ticker for untracking posts that are past a certain age
+	untrackPostsTicker := time.NewTicker(time.Second * time.Duration(util.GetEnvInt("UNTRACK_POSTS_REFRESH_PERIOD")))
+
 	for {
 		select {
 		case <-redditTicker.C:
@@ -57,6 +62,9 @@ func Start(reddit redditApiHandlerScheduler, database databaseConnectionSchedule
 			if err != nil {
 				logOutputError("error updating:\n" + err.Error())
 			}
+
+		case <-untrackPostsTicker.C:
+			StopTrackingOldPosts(reddit)
 		}
 		fmt.Println() //create spacing between the different events
 	}
@@ -66,7 +74,10 @@ func Start(reddit redditApiHandlerScheduler, database databaseConnectionSchedule
 
 func pullFromDB(reddit redditApiHandlerScheduler, database databaseConnectionScheduler) {
 	logOutput("pulling from db...")
-	insertions, err := database.RecieveListings(reddit.GetTrackedPosts()) //reddit API handler's tracked posts <<< posts from db
+
+	maxAge := util.GetEnvInt("MAX_TRACKING_AGE")
+
+	insertions, err := database.RecieveListings(reddit.GetTrackedPosts(), int64(maxAge)) //reddit API handler's tracked posts <<< posts from db
 	if err != nil {
 		logOutputError("warning: error recieving listings from database:\n" + err.Error())
 	}
@@ -115,6 +126,13 @@ func updateTrackedPosts(reddit redditApiHandlerScheduler, database databaseConne
 	}
 
 	return nil
+}
+
+func StopTrackingOldPosts(reddit redditApiHandlerScheduler) {
+	untrackedPosts := reddit.StopTrackingOldPosts(uint64(util.GetEnvInt("MAX_TRACKING_AGE")))
+	if untrackedPosts > 0 {
+		logOutput(fmt.Sprintf("no longer tracking %d old posts", untrackedPosts))
+	}
 }
 
 //pretty formatted printing
