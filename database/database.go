@@ -2,143 +2,143 @@ package database
 
 import (
 	"context"
-	"errors"
 	"fmt"
-	"time"
+	"io"
+	"strconv"
 
+	"github.com/jtyrmn/reddit-votewatch/conv"
+	"github.com/jtyrmn/reddit-votewatch/pb"
 	"github.com/jtyrmn/reddit-votewatch/reddit"
 	"github.com/jtyrmn/reddit-votewatch/util"
-	"go.mongodb.org/mongo-driver/bson"
 	"go.mongodb.org/mongo-driver/mongo"
-	"go.mongodb.org/mongo-driver/mongo/options"
+	"google.golang.org/grpc"
+	"google.golang.org/grpc/credentials/insecure"
+	"google.golang.org/grpc/metadata"
 )
 
-//this module deals with the mongodb connection where we record reddit data
+/*
+This module used to contain mongodb interfacing code, but now serves as a
+grpc client to the subreddit-logger-database service. All mongodb code was
+moved over there.
+*/
 type connection struct {
-	connection mongo.Client
-
-	//the listings collection is probably the only collection this file will ever touch
-	listings mongo.Collection
+	connection grpc.ClientConn
+	client     pb.ListingsDatabaseClient
 }
 
 //note: a listing is just a piece of media from reddit. A comment or a post or a link, etc
 
-//this template struct describes how each listing is represented in the db
+// this template struct describes how each listing is represented in the db
 type document struct {
 	Id      reddit.Fullname      `bson:"_id"`
 	Listing reddit.RedditContent `bson:"listing"`
 }
 
-//call this function to establish a new connection with your mongodb db
+// call this function to establish a new connection with subreddit-logger-db
 func Connect() (*connection, error) {
-	connectionString := util.GetEnv("MONGODB_CONNECTION_STRING")
-	databaseName := util.GetEnv("MONGODB_DATABASE_NAME")
-
-	conn, err := mongo.Connect(context.Background(), options.Client().ApplyURI(connectionString))
+	conn, err := grpc.Dial(util.GetEnv("SUBREDDIT_LOGGER_DATABASE_LOCATION"),  grpc.WithTransportCredentials(insecure.NewCredentials()))
+	// TODO: figure out credentials
 	if err != nil {
-		return nil, errors.New("error connecting to database:\n" + err.Error())
+		return nil, fmt.Errorf("error establishing connection:\n%s", err)
 	}
 
-	//"listings" collection
-	collection := conn.Database(databaseName).Collection("listings")
+	client := pb.NewListingsDatabaseClient(conn)
 
-	return &connection{connection: *conn, listings: *collection}, nil
+	return &connection{connection: *conn, client: client}, nil
 }
 
-//saves the listings to the database. Note that Fullname IDs in ContentGroup are treated as unique keys so duplicates will not be inserted
-//as a result, you should use this function to save listings that were recently created on reddit (probably not in the database yet)
+/*
+the connection will be active the entire program, but try to close it when
+the program terminates
+*/
+func (c connection) Close() {
+	c.connection.Close()
+}
+
+// saves the listings to the database. Note that Fullname IDs in ContentGroup are treated as unique keys so duplicates will not be inserted
+// as a result, you should use this function to save listings that were recently created on reddit (probably not in the database yet)
 func (c connection) SaveListings(listings reddit.ContentGroup) error {
+	// SaveListings requires a listings-count header
+	md := metadata.New(map[string]string{"listings-count": strconv.Itoa(len(listings))})
+	ctx := metadata.NewOutgoingContext(context.Background(), md)
 
-	if len(listings) == 0 {
-		return nil
+	// start streaming
+	stream, err := c.client.SaveListings(ctx)
+	if err != nil {
+		return fmt.Errorf("error creating stream:\n%s", err)
 	}
 
-	//convert all the items in listings to a bson-friendly array before sending it off to the db
-	documents := make([]interface{}, len(listings))
-	documents_idx := 0
-	for id, listing := range listings {
-		documents[documents_idx] = document{Id: id, Listing: listing}
-		documents_idx += 1
+	for ID, listing := range listings {
+		toSend := conv.ToGrpc(listing)
+		err = stream.Send(&toSend)
+		if err != nil {
+			return fmt.Errorf("error streaming listing of ID \"%s\":\n%s", ID, err)
+		}
 	}
 
-	_, err := c.listings.InsertMany(context.Background(), documents)
-	//error handling mongodb driver is complex so I will this until later. It's not like program state is going to change if an error occurs here
-	//TODO
-	if err != nil && !isDuplicateKeyError(err) { //ignore duplicate key errors, those are expected
-		return err
+	// recieve response
+	_, err = stream.CloseAndRecv()
+	if err != nil {
+		return fmt.Errorf("error from server response:\n%s", err)
 	}
+
 	return nil
 }
 
-//pulls *all* the listings from the database and places it into the set parameter.
-//doesn't replace pre-existing duplicate, probably more up-to-date, listings in set however
-//maxAge: only recieve posts that are at most maxAge seconds old
-//returns # of listings inserted into set
+// pulls *all* the listings from the database and places it into the set parameter.
+// doesn't replace pre-existing duplicate, probably more up-to-date, listings in set however
+// maxAge: only recieve posts that are at most maxAge seconds old
+// returns # of listings inserted into set
 func (c connection) RecieveListings(set reddit.ContentGroup, maxAge int64) (int, error) {
-
-	maxDate := time.Now().Unix() - int64(maxAge)
-	fmt.Println(maxDate)
-	data, err := c.listings.Find(context.Background(), bson.D{{"listing.date", bson.D{{"$gte", maxDate}}}})
+	request := pb.RetrieveListingsRequest{MaxAge: uint64(maxAge)}
+	stream, err := c.client.RetrieveListings(context.Background(), &request)
 	if err != nil {
-		return 0, err
+		return 0, fmt.Errorf("error calling database service:\n%s", err)
 	}
 
-	countInsertions := 0
-	for data.Next(context.Background()) {
-		var d document
-		data.Decode(&d)
-
-		//_id is a unique, required key. I don't think this check is required unless some custom-id document was inserted from somewhere else
-		if !d.Id.IsValid() {
-			fmt.Printf("warning: listing with invalid ID \"%s\" found in database\n", d.Id)
-			continue
+	recievedCount := 0
+	// recieve listings from stream and put them into set
+	for {
+		recieved, err := stream.Recv()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			return 0, fmt.Errorf("error reading from stream:\n%s", err)
 		}
 
-		//check if the listing already exists within the output we recieved
-		if _, exists := set[d.Id]; exists {
-			//fmt.Printf("debugging: %s already exists\n", d.Id)
-			continue
-		}
-
-		set[d.Id] = d.Listing
-		countInsertions += 1
+		listing := conv.ToRedditContent(*recieved)
+		set[listing.FullId()] = listing
+		recievedCount += 1
 	}
 
-	return countInsertions, nil
+	return recievedCount, nil
 }
 
-//Records all the listings in newData as entries in the database under their respective listings
+// Records all the listings in newData as entries in the database under their respective listings
 func (c connection) RecordNewData(newData reddit.ContentGroup) error {
+	// UpdateListings requires a listings-count header
+	md := metadata.New(map[string]string{"listings-count": strconv.Itoa(len(newData))})
+	ctx := metadata.NewOutgoingContext(context.Background(), md)
 
-	if len(newData) == 0 {
-		return nil
-	}
-
-	//template for a single entry under a listing
-	type record struct {
-		Upvotes  int
-		Comments int
-		Date     uint64
-	}
-
-	//have to construct a bulk write, a unique $push update for every entry listing
-	models := make([]mongo.WriteModel, len(newData))
-	modelsIdx := 0
-	for id, listing := range newData {
-		r := record{
-			Upvotes:  listing.Upvotes,
-			Comments: listing.Comments,
-			Date:     listing.QueryDate,
-		}
-		model := mongo.NewUpdateOneModel().SetFilter(bson.D{{"_id", id}}).SetUpdate(bson.D{{"$push", bson.D{{"entries", r}}}})
-
-		models[modelsIdx] = model
-		modelsIdx += 1
-	}
-
-	_, err := c.listings.BulkWrite(context.Background(), models, options.BulkWrite().SetOrdered(false))
+	// start streaming
+	stream, err := c.client.UpdateListings(ctx)
 	if err != nil {
-		return errors.New("error updating entries in database:\n" + err.Error())
+		return fmt.Errorf("error creating stream:\n%s", err)
+	}
+
+	for ID, listing := range newData {
+		toSend := conv.ToGrpc(listing)
+		err = stream.Send(&toSend)
+		if err != nil {
+			return fmt.Errorf("error streaming listing of ID \"%s\":\n%s", ID, err)
+		}
+	}
+
+	// recieve response
+	_, err = stream.CloseAndRecv()
+	if err != nil {
+		return fmt.Errorf("error from server response:\n%s", err)
 	}
 
 	return nil
@@ -159,13 +159,14 @@ func isDuplicateKeyError(err error) bool {
 	return false
 }
 
-//all posts in the database that are past maxAge seconds old get deleted
-//returns # of listings deleted
+// all posts in the database that are past maxAge seconds old get deleted
+// returns # of listings deleted
 func (c connection) CullListings(maxAge uint64) (int, error) {
-	res, err := c.listings.DeleteMany(context.Background(), bson.D{{"listing.date", bson.D{{"$lt", uint64(time.Now().Unix()) - maxAge}}}})
+	request := pb.CullListingsRequest{MaxAge: maxAge}
+	response, err := c.client.CullListings(context.Background(), &request)
 	if err != nil {
-		return 0, errors.New("error deleting listings from database:\n" + err.Error())
+		return 0, fmt.Errorf("error calling database service:\n%s", err)
 	}
 
-	return int(res.DeletedCount), nil
+	return int(response.NumDeleted), nil
 }
