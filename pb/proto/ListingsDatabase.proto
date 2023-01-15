@@ -1,0 +1,113 @@
+/*
+    this file is the API contract that all services using
+    subreddit-logger-database will share (they will all use
+    this same file for code gen)
+*/
+
+syntax="proto3";
+
+option go_package="../pb";
+
+service ListingsDatabase {
+
+    /*
+        the "save listings" protocol sends an unconstrained amount of newly 
+        discovered listings to the database to be saved.
+
+        ensure that the listings-count header is set before calling SaveListings
+    */
+    rpc SaveListings (stream RedditContent) returns (SaveListingsResponse) {}
+
+    /*
+        the "update listings" protocol updates the records of pre-existing 
+        listings in the database
+
+        ensure that the listings-count header is set before calling
+        UpdateListings
+    */
+    rpc UpdateListings (stream RedditContent) returns (UpdateListingsResponse) {}
+
+    /*
+        the "cull listings" protocol deletes all listings in the database at are
+        over a certain age
+    */
+    rpc CullListings (CullListingsRequest) returns (CullListingsResponse) {}
+
+    /*
+        pulls a limited amount of listings, usually for display on a web-page.
+        Sorting method and other factors that choose the specific items are 
+        arbitrary as of writing this comment
+    */
+    rpc ManyListings (ManyListingsRequest) returns (ManyListingsResponse) {}
+
+    /*
+        RetrieveListings differs from ManyListings in that it returns all
+        listings past a certain age, doesn't sort, and streams output
+    */
+    rpc RetrieveListings (RetrieveListingsRequest) returns (stream RedditContent) {}
+
+    /*
+        FetchListing retrieves a specific listing by ID from the database
+    */
+    rpc FetchListing (FetchListingRequest) returns (RedditContent) {}
+
+
+}
+
+// A listing object that's stored in + returned from the database. 
+message RedditContent {
+    message MetaData {
+        string content_type = 1 [json_name="contenttype"];
+        string id = 2  [json_name="id"];
+
+        string title = 3;
+        uint32 upvotes = 4;
+        uint32 comments = 5;
+        
+        uint64 date_created = 6 [json_name="date"];
+        uint64 date_queried = 7 [json_name="querydate"];
+    }
+
+    message ListingEntry {
+        uint32 upvotes = 1;
+        uint32 comments = 2;
+        
+        uint64 date_queried = 3 [json_name="date"];
+    }
+
+    string id = 1 [json_name="_id"];
+    MetaData meta_data = 2 [json_name="listing"];
+    repeated ListingEntry entries = 3;
+}
+
+message SaveListingsResponse {}
+
+message UpdateListingsResponse {}
+
+message CullListingsRequest {
+    uint64 max_age = 1; // max age is in seconds
+}
+message CullListingsResponse {
+    uint32 num_deleted = 1;
+}
+
+message ManyListingsRequest {
+    uint32 limit = 1; // this value shouldn't be too high
+    uint32 skip = 2; // for pagination. # of listings to skip over
+}
+
+message ManyListingsResponse {
+    repeated RedditContent listings = 1;
+    /*
+        listings isn't sent as a stream as the # of listings is constrained and
+        not gonna be that big
+    */
+}
+
+message FetchListingRequest {
+    string id = 1;
+}
+
+message RetrieveListingsRequest {
+    uint64 max_age = 1;
+}
